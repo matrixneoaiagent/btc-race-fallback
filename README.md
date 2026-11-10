@@ -14,14 +14,16 @@ Everything happens in `main.ts`, on the `agent-fun/bars-replay/v1` protocol:
 
 1. **Entry.** On the first batch that carries a CBBTC close, send one buy for
    `min(cash, caps.max_weight_bps * equity / 10000)` with `max_slippage_bps: 10000` so the fill is
-   never refused. One order, sent once, never retried. On a window with no leading gap this is
-   batch 0 and fills at the open of bar 1.
+   never refused on slippage. On a window with no leading gap this is batch 0 and fills at the open
+   of bar 1. If the market refuses the order anyway (no bar at that open), the same order is sent
+   again on the next bar that has one, while flat — a bot that never trades cannot race.
 2. **Peak tracking.** While the position is held, record the highest equity seen (cash plus the
    position marked at its latest close). The peak starts at the first marked equity, i.e. after the
    entry's fee, slippage and price impact are already paid.
 3. **Stop.** If equity falls **300 bps (3%) or more below that peak**, sell the entire position,
    again with `max_slippage_bps: 10000`, and then stay in cash for the rest of the window. No
-   re-entry, no scaling, no second guess.
+   re-entry, no scaling, no second guess. A sell the market refuses is sent again on the next bar,
+   because once the stop has fired the position must not be carried further.
 
 The stop is the whole point of the design. A full-size round trip pays roughly 26 bps in fee,
 slippage and price impact, so every extra signal-driven trade has to catch a move bigger than that

@@ -25,10 +25,8 @@ const STOP_BPS = 300n;
 /** Wide open: the stop must be able to exit whatever the next open does. */
 const MAX_SLIPPAGE_BPS = 10_000;
 
-/** The buy has been decided (sent once, never retried). */
-let bought = false;
-/** The stop has fired; the bot is in cash for the rest of the window. */
-let stopped = false;
+/** The stop has fired; the bot is in cash for the rest of the window and never buys again. */
+let stopFired = false;
 /** Highest equity seen while the position was held. */
 let peakEquity = 0n;
 
@@ -36,18 +34,23 @@ await runBars({
   onBatch(state): OrderInput[] {
     const position = state.positions.get(SYMBOL);
 
-    // Holding: ratchet the peak, then check the stop against this bar's mark.
+    // Holding: ratchet the peak, then check the stop against this bar's mark. A sell the market
+    // refuses (no bar at that open) is sent again on the next bar: once the stop has fired the
+    // position must not be carried any further.
     if (position !== undefined && position.qty > 0n) {
       if (state.equity > peakEquity) peakEquity = state.equity;
-      if (!stopped && peakEquity > 0n && (peakEquity - state.equity) * BPS >= peakEquity * STOP_BPS) {
-        stopped = true;
+      if (stopFired || (peakEquity > 0n && (peakEquity - state.equity) * BPS >= peakEquity * STOP_BPS)) {
+        stopFired = true;
         return [{ side: 'sell', symbol: SYMBOL, qty: position.qty, max_slippage_bps: MAX_SLIPPAGE_BPS }];
       }
       return [];
     }
 
-    // Flat. Buy once, on the first batch that has a usable close; after the stop, stay out.
-    if (bought || stopped) return [];
+    // Flat. Buy on the first batch that has a usable close; after the stop, stay out. A buy
+    // the market refuses (no bar at that open, say) is tried again on the next bar that has one,
+    // because a window the bot never trades is a window it cannot race: the guardrail needs at
+    // least one own fill. The first attempt is the one that fills on every window with no gap.
+    if (stopFired) return [];
     if (state.close(SYMBOL) === null) return [];
 
     const { caps, fees } = state.hello;
@@ -55,7 +58,6 @@ await runBars({
     const spend = state.cash < byWeight ? state.cash : byWeight;
     if (spend === 0n || spend < BigInt(fees.min_notional_quote_units)) return [];
 
-    bought = true;
     return [{ side: 'buy', symbol: SYMBOL, notional_quote_units: spend, max_slippage_bps: MAX_SLIPPAGE_BPS }];
   },
 });
